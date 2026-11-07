@@ -67,15 +67,15 @@ Signing identity `dev.halopad.HaloPad.robby` is applied by Devices. This reposit
 `rokoben-a11y/ios-signing` script-mode can build an unsigned Xbox shell because that path does not need the installer or the key. It cannot build Custom Edition unless those files are uploaded. Do not upload them, and do not change that infrastructure. Resign stays off.
 
 ```text
-repo_url: https://github.com/chrissotraidis/projectreach.git
-ref: v0.3.15
+repo_url: https://github.com/rokoben-a11y/projectreach.git
+ref: cursor/ce-prebundle-duo-controls-54b5
 build_script: scripts/builder/build.sh --xbox-only --app-version 0.3.15 --app-build 1 --ipa "$OUTPUT_IPA"
 prebuild: brew install cmake ninja lld llvm sdl3
 xcode: required
 resign: off
 ```
 
-That artifact is Xbox-only. Custom Edition still needs the Apple silicon command above, on a machine that already has the private files.
+`OUTPUT_IPA` is the script-mode output path. That artifact is Xbox-only, including the safe-area touch layout from this branch and no Custom Edition modules. Custom Edition still needs the Apple silicon command above, on a machine that already has the private files. Release tag `v0.3.15` does not contain this branch.
 
 ## What is still required
 
