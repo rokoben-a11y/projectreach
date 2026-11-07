@@ -2,7 +2,7 @@
  *
  * The core (halopad_core_run: Halo from its PE entry point) runs on its own thread. Windows
  * Halo creates appear in the app's view: the shell attaches each window's Metal layer
- * (halopad_host_attach_view), letterboxed. When Halo's first-run license check runs, the shell
+ * (halopad_host_attach_view) and scales it to the current view. When Halo's first-run license check runs, the shell
  * shows the game's own Eula.rtf with Accept and Decline and returns the player's choice
  * (halopad_host_license_prompt); nothing is chosen for the player. A hardware keyboard, touch
  * (as the left mouse button), an iPad pointer (buttons, hover, scrolling) and scene activation
@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdatomic.h>
+#include "../shared/hp_present.h"
 #include <sys/utsname.h>
 
 #include "../runtime/halopad_input.h"
@@ -1165,6 +1166,7 @@ static void touch_selftest(void)
 - (void)loadView
 {
     UIView *v = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     v.backgroundColor = UIColor.blackColor;
     v.multipleTouchEnabled = NO;
     [v addGestureRecognizer:[[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(hover:)]];
@@ -1286,7 +1288,15 @@ static void touch_selftest(void)
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    for (CALayer *l in game_view.layer.sublayers) l.frame = game_view.bounds;
+    /* Follow the window the system actually gave this scene, including a fold or resize. */
+    if (self.view.window && !CGRectEqualToRect(self.view.frame, self.view.window.bounds))
+        self.view.frame = self.view.window.bounds;
+    CGFloat scale = self.traitCollection.displayScale;
+    if (scale > 0 && game_view.contentScaleFactor != scale) game_view.contentScaleFactor = scale;
+    for (CALayer *l in game_view.layer.sublayers) {
+        l.frame = game_view.bounds;
+        if (scale > 0) l.contentsScale = scale;
+    }
     [self applyDisplay];
     [self.view bringSubviewToFront:overlay];
 }
@@ -1458,9 +1468,12 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     halopad_host_window_size(input_window, &w, &h);
     CGRect b = game_view.frame;
     if (b.size.width <= 0 || b.size.height <= 0) return NO;
-    double sx = b.size.width / w, sy = b.size.height / h;
-    if (b.size.height < self.view.bounds.size.height - 1 || HPSettings.shared.aspect != HPAspectFill) sx = sy = fmin(sx, sy);
-    double ox = b.origin.x + (b.size.width - w * sx) / 2, oy = b.origin.y + (b.size.height - h * sy) / 2;
+    int fit = b.size.height < self.view.bounds.size.height - 1 || HPSettings.shared.aspect != HPAspectFill;
+    double cx, cy, cw, ch;
+    hp_present_frame(b.size.width, b.size.height, w, h, fit, &cx, &cy, &cw, &ch);
+    if (!(cw > 0 && ch > 0)) return NO;
+    double sx = cw / w, sy = ch / h;
+    double ox = b.origin.x + cx, oy = b.origin.y + cy;
     *x = (int32_t)floor((p.x - ox) / sx);
     *y = (int32_t)floor((p.y - oy) / sy);
     *scale = 1 / fmin(sx, sy);
@@ -1795,7 +1808,9 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     if (![audio setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:AVAudioSessionCategoryOptionMixWithOthers error:&err] ||
         ![audio setActive:YES error:&err])
         fprintf(stderr, "HALOPAD APP: audio session: %s\n", err.localizedDescription.UTF8String);
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    self.window = [[UIWindow alloc] initWithWindowScene:windowScene];
+    self.window.frame = windowScene.coordinateSpace.bounds;
     if (HPEngineChooserMake)
         self.window.rootViewController = HPEngineChooserMake(^UIViewController *{ return game_vc = [HPGameViewController new]; });
     else
@@ -1805,13 +1820,14 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     UIWindowSceneGeometryPreferencesIOS *land = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape];
     [(UIWindowScene *)scene requestGeometryUpdateWithPreferences:land errorHandler:^(NSError *e) { fprintf(stderr, "HALOPAD APP: landscape request: %s\n", e.localizedDescription.UTF8String); }];
 }
-/* iPadOS 26 opens apps in resizable windows when the iPad uses Windowed Apps
-   (Settings → Multitasking & Gestures); only the player can choose Full Screen
-   Apps. Keep the window controls minimal so they stay out of Halo's picture,
-   which letterboxes to any window size. */
+/* Keep the window controls minimal. The picture uses whatever bounds this scene has. */
 - (UISceneWindowingControlStyle *)preferredWindowingControlStyleForScene:(UIWindowScene *)windowScene API_AVAILABLE(ios(26.0))
 {
     return UISceneWindowingControlStyle.minimalStyle;
+}
+- (void)windowScene:(UIWindowScene *)windowScene didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation traitCollection:(UITraitCollection *)previousTraitCollection
+{
+    self.window.frame = windowScene.coordinateSpace.bounds;
 }
 - (void)sceneDidBecomeActive:(UIScene *)scene
 {

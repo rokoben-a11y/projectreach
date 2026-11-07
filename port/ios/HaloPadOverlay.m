@@ -21,7 +21,7 @@
         [NSUserDefaults.standardUserDefaults registerDefaults:@{
             @"HaloPad.controlOpacity": @0.8, @"HaloPad.controlSize": @1.0, @"HaloPad.lookSensitivity": @1.5,
             @"HaloPad.hideWithController": @YES, @"HaloPad.hideTouchControls": @NO, @"HaloPad.showFPS": @NO,
-            @"HaloPad.aspect": @0, @"HaloPad.recentServers": @[], @"HaloPad.leftHanded": @NO, @"HaloPad.showCaptions": @YES,
+            @"HaloPad.aspect": @1, @"HaloPad.recentServers": @[], @"HaloPad.leftHanded": @NO, @"HaloPad.showCaptions": @YES,
             @"HaloPad.ringSpacing": @1, @"HaloPad.mouseSpeed": @1.0}];
     });
     return s;

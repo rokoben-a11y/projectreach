@@ -144,7 +144,7 @@ void *halopad_host_window_create(uint32_t width, uint32_t height, const char *ti
         w->layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         w->layer.framebufferOnly = YES;
         w->layer.drawableSize = CGSizeMake(width, height);
-        w->layer.contentsGravity = kCAGravityResizeAspect;   /* letterboxed in the shell's view */
+        w->layer.contentsGravity = kCAGravityResize;         /* shell scales this to the current view */
         w->layer.hidden = !visible;
         [CATransaction flush];                           /* Halo's thread has no run loop to commit it */
     }
