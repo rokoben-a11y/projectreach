@@ -38,7 +38,8 @@ def main():
                             env=env, capture_output=True, text=True, timeout=30)
     output = result.stdout + result.stderr
     (evidence / 'run.txt').write_text(output)
-    inputs = sources + [ROOT / 'port/ios/HaloPadOverlay.h', ROOT / 'port/runtime/halopad_input.h',
+    inputs = sources + [ROOT / 'port/ios/HaloPadOverlay.h', ROOT / 'port/shared/hp_control_layout.h',
+                        ROOT / 'port/runtime/halopad_input.h',
                         ROOT / 'port/xbox/xg_overlay_input.h', ROOT / 'port/xbox/xg_touch_input.h']
     (evidence / 'result.json').write_text(json.dumps({
         'device': args.device, 'exit': result.returncode, 'build_command': cmd,

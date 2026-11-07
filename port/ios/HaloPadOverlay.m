@@ -7,6 +7,7 @@
 
 #include "../runtime/halopad_input.h"
 #include "../runtime/halopad_log.h"
+#include "../shared/hp_control_layout.h"
 
 /* ---- settings (NSUserDefaults, HaloPad-owned keys) ---- */
 
@@ -419,6 +420,7 @@ static const hp_control_def CONTROLS[] = {
     {"menu",      "",        "pause.fill",                     -1, 0, 0},
 };
 #define NCONTROLS (int)(sizeof CONTROLS / sizeof CONTROLS[0])
+_Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay in shared layout-slot order");
 
 /* The three-dot button. On iOS 26 a button's menu grows out of the button and
    shrinks back into it. A custom button styled through its layer (background,
@@ -823,20 +825,41 @@ static const hp_control_def CONTROLS[] = {
     _fps.text = [NSString stringWithFormat:@"%d FPS", fps];
 }
 
-/* ---- layout: point-sized targets constrained together to the safe area, with
-   separate saved phone/tablet positions and sizes ---- */
+/* ---- layout: shared size-class geometry, saved per safe-area class ----
+   Compact is the lower grip (short or narrow safe area, including an unknown
+   outer screen). Large is the raised tablet grip. Idiom does not choose it. */
 
-- (BOOL)phone { return self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPhone; }
-- (NSString *)key:(NSString *)what { return [NSString stringWithFormat:@"HaloPad.%@.v3.%@", self.phone ? @"phone" : @"tablet", what]; }
+- (BOOL)layoutLarge
+{
+    CGRect safe = self.safe;
+    return hp_layout_size_class(safe.size.width, safe.size.height) == HP_LAYOUT_LARGE;
+}
+- (NSString *)key:(NSString *)what
+{
+    return [NSString stringWithFormat:@"HaloPad.%@.v4.%@", self.layoutLarge ? @"large" : @"compact", what];
+}
+- (NSString *)legacyKey:(NSString *)what
+{
+    BOOL pad = self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone;
+    if (self.layoutLarge != pad) return nil;
+    return [NSString stringWithFormat:@"HaloPad.%@.v3.%@", pad ? @"tablet" : @"phone", what];
+}
+- (NSDictionary *)saved:(NSString *)what
+{
+    NSDictionary *found = [NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:what]];
+    if (found) return found;
+    NSString *legacy = [self legacyKey:what];
+    return legacy ? [NSUserDefaults.standardUserDefaults dictionaryForKey:legacy] : nil;
+}
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 
 - (void)place:(UIView *)v frame:(CGRect)f
 {
     NSString *ident = v.accessibilityIdentifier;
-    NSNumber *scale = [NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:@"scales"]][ident];
+    NSNumber *scale = [self saved:@"scales"][ident];
     CGFloat s = scale ? scale.doubleValue : 1;
     v.bounds = CGRectMake(0, 0, fmax(44, f.size.width * s), fmax(44, f.size.height * s));
-    NSString *saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:@"origins"]][ident];
+    NSString *saved = [self saved:@"origins"][ident];
     CGRect safe = self.safe;
     CGPoint c = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
     if (saved) {
@@ -853,59 +876,24 @@ static const hp_control_def CONTROLS[] = {
 {
     [super layoutSubviews];
     CGRect safe = self.safe;
-    BOOL pad = !self.phone && safe.size.width >= 1000;
-    /* Bound the whole arrangement before placing individual controls. Clamping each
-       circle against an edge was what collapsed the old ring at larger sizes. */
-    CGFloat k = fmin((pad ? 1.10 : 1) * HPSettings.shared.controlSize,
-                     fmin(safe.size.width / 760, (safe.size.height - 68) / 260));
-    k = fmax(0.65, k);
-    CGFloat stick = fmax(100, 144 * k), action = fmax(44, 52 * k);
-    CGFloat utility = fmax(44, 44 * k), fire = fmax(60, 72 * k);
-    CGFloat gaps[] = {8, 12, 18};
-    CGFloat gap = fmax(8, gaps[HPSettings.shared.ringSpacing] * k);
-    /* Thumb reach is measured in points, not a fraction of the display width.
-       Keep both sticks on one baseline and leave identical space around them. */
-    CGFloat inset = fmin(160 - stick / 2, fmax(16, (self.phone ? 20 : 36) * k));
-    CGFloat left = CGRectGetMinX(safe) + inset;
-    CGFloat right = CGRectGetMaxX(safe) - inset;
-    /* Tablet thumbs rest along the sides, above the bottom-left motion tracker.
-       A phone's shorter display needs the lower grip instead. */
-    CGFloat pitch = action + gap;
-    CGFloat rowOverhang = fmax(0, pitch + action / 2 - stick / 2);
-    CGFloat bottom = CGRectGetMaxY(safe) - (self.phone ? fmax(20, 32 * k) : fmax(160, 128 * k)) - rowOverhang;
-    /* Small actions share one compact pitch. FIRE has its own clearance above
-       LOOK, so its larger diameter does not inflate every small-button gap. */
-    /* Center each action column on its thumb. The old half-row offset put the
-       middle actions above the thumb and left uneven space below both clusters. */
-    CGFloat midY = bottom - stick / 2;
-    CGFloat lowY = midY + pitch, rowY = midY - pitch;
-    CGFloat nearX = right - stick - gap - action / 2;
-    CGFloat farX = nearX - pitch;
-    CGFloat fireX = right - stick / 2;
-    CGFloat fireY = bottom - stick - gap - fire / 2;
-    CGFloat throwY = fireY;
-    CGFloat leftInnerX = left + stick + gap + action / 2;
-    BOOL mirror = HPSettings.shared.leftHanded;
-    CGFloat (^mx)(CGFloat) = ^CGFloat(CGFloat x) { return mirror ? CGRectGetMinX(safe) + CGRectGetMaxX(safe) - x : x; };
-    [self place:_move frame:CGRectMake(mx(left + stick / 2) - stick / 2, bottom - stick, stick, stick)];
-    [self place:_aim frame:CGRectMake(mx(right - stick / 2) - stick / 2, bottom - stick, stick, stick)];
-    CGPoint points[NCONTROLS] = {
-        {fireX, fireY}, {farX, midY}, {farX, lowY}, {farX, rowY},
-        {left + stick / 2, throwY}, {nearX, midY}, {nearX, rowY},
-        {leftInnerX, lowY}, {nearX, lowY},
-        {leftInnerX, midY},
-        {leftInnerX, rowY},
-        {CGRectGetMidX(safe) - utility / 2 - 6, CGRectGetMinY(safe) + utility / 2 + 12},
-        {CGRectGetMidX(safe) + utility / 2 + 6, CGRectGetMinY(safe) + utility / 2 + 12},
+    hp_layout_request request = {
+        .safe_x = safe.origin.x, .safe_y = safe.origin.y,
+        .safe_w = safe.size.width, .safe_h = safe.size.height,
+        .control_size = HPSettings.shared.controlSize,
+        .ring_spacing = (int)HPSettings.shared.ringSpacing,
+        .left_handed = HPSettings.shared.leftHanded,
     };
+    hp_layout_box boxes[HP_LAYOUT_SLOT_COUNT];
+    hp_layout_frames(&request, boxes);
+    hp_layout_box move = boxes[HP_LAYOUT_MOVE], look = boxes[HP_LAYOUT_LOOK];
+    [self place:_move frame:CGRectMake(move.x, move.y, move.w, move.h)];
+    [self place:_aim frame:CGRectMake(look.x, look.y, look.w, look.h)];
     for (int i = 0; i < NCONTROLS; i++) {
-        CGFloat dia = CONTROLS[i].size == 2 ? fire : CONTROLS[i].size == 1 ? action : utility;
-        CGPoint c = points[i];
-        if (i < NCONTROLS - 2) c.x = mx(c.x);
-        [self place:_buttons[i] frame:CGRectMake(c.x - dia / 2, c.y - dia / 2, dia, dia)];
+        hp_layout_box box = boxes[HP_LAYOUT_FIRE + i];
+        [self place:_buttons[i] frame:CGRectMake(box.x, box.y, box.w, box.h)];
         [_buttons[i] setNeedsLayout];
     }
-    CGFloat side = 44; inset = 12;
+    CGFloat side = 44, inset = 12;
     _menuButton.frame = CGRectMake(CGRectGetMaxX(safe) - side - inset, CGRectGetMinY(safe) + inset, side, side);
     _fps.frame = CGRectMake(CGRectGetMaxX(safe) - side - inset - 86, CGRectGetMinY(safe) + inset + 8, 76, 24);
     CGFloat hintWidth = fmin(440, safe.size.width - 32);
@@ -1472,13 +1460,16 @@ static NSString * const HPRepositoryURL = @"https://github.com/chrissotraidis/pr
 - (void)confirmReset
 {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Reset Touch Control Layout?"
-                                                               message:@"All control positions and sizes on this kind of device return to their defaults."
+                                                               message:@"All control positions and sizes for this screen size return to their defaults."
                                                         preferredStyle:UIAlertControllerStyleAlert];
     __weak HPOverlay *weak = self;
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
         [NSUserDefaults.standardUserDefaults removeObjectForKey:[weak key:@"origins"]];
         [NSUserDefaults.standardUserDefaults removeObjectForKey:[weak key:@"scales"]];
+        NSString *legacyOrigins = [weak legacyKey:@"origins"], *legacyScales = [weak legacyKey:@"scales"];
+        if (legacyOrigins) [NSUserDefaults.standardUserDefaults removeObjectForKey:legacyOrigins];
+        if (legacyScales) [NSUserDefaults.standardUserDefaults removeObjectForKey:legacyScales];
         [weak setNeedsLayout];
     }]];
     [self.presenter presentViewController:a animated:YES completion:nil];
@@ -1549,7 +1540,7 @@ static NSString * const HPRepositoryURL = @"https://github.com/chrissotraidis/pr
 - (void)select:(UIView *)v
 {
     _selected = v;
-    NSNumber *s = [NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:@"scales"]][v.accessibilityIdentifier];
+    NSNumber *s = [self saved:@"scales"][v.accessibilityIdentifier];
     _selectedSize.value = s ? s.floatValue : 1;
     _selectedSize.enabled = YES;
     _editorHint.text = [NSString stringWithFormat:@"%@ size", v.accessibilityLabel];
@@ -1602,7 +1593,7 @@ static NSString * const HPRepositoryURL = @"https://github.com/chrissotraidis/pr
                            fmin(fmax(v.center.y + d.y, CGRectGetMinY(safe) + hh), CGRectGetMaxY(safe) - hh));
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         if (g.state == UIGestureRecognizerStateEnded) v.center = [self alignedCenter:v.center forView:v];
-        NSMutableDictionary *o = [[NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:@"origins"]] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *o = [[self saved:@"origins"] mutableCopy] ?: [NSMutableDictionary dictionary];
         o[v.accessibilityIdentifier] = NSStringFromCGPoint(CGPointMake((v.center.x - CGRectGetMinX(safe)) / safe.size.width,
                                                                        (v.center.y - CGRectGetMinY(safe)) / safe.size.height));
         [NSUserDefaults.standardUserDefaults setObject:o forKey:[self key:@"origins"]];
@@ -1611,7 +1602,7 @@ static NSString * const HPRepositoryURL = @"https://github.com/chrissotraidis/pr
 - (void)selectedSizeChanged:(UISlider *)s
 {
     if (!_selected) return;
-    NSMutableDictionary *o = [[NSUserDefaults.standardUserDefaults dictionaryForKey:[self key:@"scales"]] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *o = [[self saved:@"scales"] mutableCopy] ?: [NSMutableDictionary dictionary];
     o[_selected.accessibilityIdentifier] = @(s.value);
     [NSUserDefaults.standardUserDefaults setObject:o forKey:[self key:@"scales"]];
     [self setNeedsLayout];
