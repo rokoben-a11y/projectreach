@@ -62,25 +62,49 @@ Signing identity `dev.halopad.HaloPad.robby` is applied by Devices. This reposit
 - `com.apple.developer.kernel.extended-virtual-addressing`
 - `com.apple.developer.kernel.increased-memory-limit`
 
-## Generic Mac CI
+## Installed-stock regeneration
 
-`rokoben-a11y/ios-signing` script-mode can build an unsigned Xbox shell because that path does not need the installer or the key. It cannot build Custom Edition unless those files are uploaded. Do not upload them, and do not change that infrastructure. Resign stays off.
+The old personal IPA's `haloce.exe`, `Keystone.dll`, `ksimeui.dll`, and `controls/Controls.dll` match `config/profiles/custom-en-1.0.10.0621.json`. That installed tree can regenerate the current translation. The builder checks those hashes and does not copy `data/modules` or `data/image.bin`.
+
+`--installed-stock` does not read a product key and refuses `--xbox-only`. Halo still reads `HKLM\Software\Microsoft\Microsoft Games\Halo CE\PID` and `DigitalProductID` at startup. Those values are not in the executable or the maps. Pass the file the player's own app already has. If it is missing, stop: a new ID still needs `PidGen.dll` from `HaloCESetup.exe` and the product key.
+
+MSXML 4 is not in `bundled-game`. Pass `data/reference` from the same app. The pinned redistributable hashes are checked, and a different file is refused.
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
+scripts/builder/build.sh \
+  --installed-stock /private/old-ipa/Payload/HaloPad.app/bundled-game \
+  --reference-root /private/old-ipa/Payload/HaloPad.app/data/reference \
+  --product-id-file /private/old-ipa/Payload/HaloPad.app/data/config/runtime/product-id.txt \
+  --xbox \
+  --app-version 0.3.15 \
+  --app-build 1 \
+  --out /private/halopad-build \
+  --ipa "$OUTPUT_IPA"
+```
+
+`$OUTPUT_IPA` is the unsigned combined IPA. It contains the new `data/modules` and `Payload/HaloPad.app/bundled-game`, so the first launch does not ask for an import. `$OUTPUT_IPA.data/Halo-CE.halopad.zip` is also written. Bundle id stays `dev.halopad.HaloPad`.
+
+Prebuild on the hosted runner. Wine is not required for this path:
+
+```sh
+brew install llvm lld cmake ninja sdl3
+```
+
+Script-mode inputs. Do not change `rokoben-a11y/ios-signing`. Resign stays off.
 
 ```text
 repo_url: https://github.com/rokoben-a11y/projectreach.git
 ref: cursor/ce-prebundle-duo-controls-54b5
-build_script: scripts/builder/build.sh --xbox-only --app-version 0.3.15 --app-build 1 --ipa "$OUTPUT_IPA"
-prebuild: brew install cmake ninja lld llvm sdl3
-xcode: required
+build_script: scripts/builder/build.sh --installed-stock "$HALOPAD_STOCK" --reference-root "$HALOPAD_REFERENCE" --product-id-file "$HALOPAD_PRODUCT_ID" --xbox --app-version 0.3.15 --app-build 1 --ipa "$OUTPUT_IPA"
+prebuild: brew install llvm lld cmake ninja sdl3
+xcode: /Applications/Xcode_26.6.app
 resign: off
 ```
 
-`OUTPUT_IPA` is the script-mode output path. That artifact is Xbox-only, including the safe-area touch layout from this branch and no Custom Edition modules. Custom Edition still needs the Apple silicon command above, on a machine that already has the private files. Release tag `v0.3.15` does not contain this branch.
-
 ## What is still required
 
-- An Apple silicon Mac with the tools listed above, for any shell that contains `data/modules`
-- Your `HaloCESetup.exe` and `product-key.txt`, kept off logs and off CI
-- Stock bytes that match the shell's signed inventory before `bundled-game` will start offline
-- Devices signing with the existing identity and a profile that grants both memory entitlements
-- No IPA was produced in this Linux pass
+- The three private paths above, taken from the old IPA and not committed
+- An Apple silicon Mac with Xcode 26.6 and the prebuild tools, to actually translate and compile
+- Devices signing with the existing identity and both memory entitlements
+- No IPA was compiled in this Linux pass

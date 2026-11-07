@@ -398,11 +398,10 @@ scripts/builder/build.sh /path/to/HaloCESetup.exe --xbox --mac --zip HaloPad.zip
 scripts/builder/build.sh /path/to/HaloCESetup.exe --xbox --ipa HaloPad.ipa
 ```
 
-The noninteractive Custom Edition command, the difference between an older
-`bundled-game` IPA and the prepared `Halo-CE.halopad.zip`, and the private
-repack are in [docs/CE-UNSIGNED-BUILD.md](docs/CE-UNSIGNED-BUILD.md). An
-Xbox-only IPA does not include Custom Edition. Do not send the installer or
-product key to a build log or to CI.
+An owned 1.10 install whose `haloce.exe` matches the locked profile can regenerate
+the current translation without the installer. The product ID already stored in
+that app is still required. See [docs/CE-UNSIGNED-BUILD.md](docs/CE-UNSIGNED-BUILD.md).
+Do not send the installer, product key, or game files to a build log or to CI.
 
 The builder downloads this release's recorded [OpenCE](https://github.com/OpenCommunityEdition/OpenCE)
 engine and the pinned ANGLE renderer from their own repositories and builds them; none of that code is
