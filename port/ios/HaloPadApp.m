@@ -393,6 +393,16 @@ static NSString *documents_game_dir(void)
     return [docs.path stringByAppendingPathComponent:@"Halo Custom Edition"];
 }
 
+/* Optional offline stock tree packed beside data/modules. Absent is normal.
+   The signed inventory still decides acceptance. Paths and file bytes are not logged. */
+static NSString *bundled_game_dir(void)
+{
+    NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"bundled-game"];
+    BOOL directory = NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || !directory) return nil;
+    return path;
+}
+
 static NSDictionary *game_core_identity(void)
 {
     NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"data/core-identity.json"];
@@ -442,7 +452,7 @@ static void resolve_device_paths(void)
     UILabel *text = [UILabel new];
     text.numberOfLines = 0;
     text.font = [UIFont systemFontOfSize:17];
-    text.text = @"Prepare your own Halo Custom Edition 1.10 files on your Mac with HaloPad’s preparation tool, using this app build. Transfer the resulting .halopad.zip package to Files, then choose it below. HaloPad checks the complete package before installing it.\n\nA replacement keeps your previous game folder as a backup. The game and its product key are not included. Choose Folder imports only supported stock files. Other files stay in the source folder or retained backup.";
+    text.text = @"Prepare your own Halo Custom Edition 1.10 files on your Mac with HaloPad’s preparation tool, using this app build. Transfer the resulting .halopad.zip package to Files, then choose it below. HaloPad checks the complete package before installing it.\n\nA replacement keeps your previous game folder as a backup. The game and its product key are not included. Choose Folder imports only supported stock files. Other files stay in the source folder or retained backup.\n\nIf this copy of HaloPad already contains matching game files, they are used automatically.";
     self.status = [UILabel new];
     self.status.numberOfLines = 0;
     self.status.font = [UIFont systemFontOfSize:15];
@@ -504,17 +514,28 @@ static void resolve_device_paths(void)
     self.importButtons.alpha = .5;
     self.status.text = @"Verifying your installed game files…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *problem = game_dir_problem(documents_game_dir());
+        NSString *docs = documents_game_dir();
+        NSString *problem = game_dir_problem(docs);
+        NSString *root = problem ? nil : docs;
+        NSString *bundled = bundled_game_dir();
+        BOOL bundledMismatch = NO;
+        if (!root && bundled) {
+            if (game_dir_problem(bundled)) bundledMismatch = YES;
+            else root = bundled;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.status.text = problem ?: @"Game data verified. Starting…";
-            if (problem) {
+            if (root) {
+                self.status.text = @"Game data verified. Starting…";
+                if (bundled && [root isEqualToString:bundled])
+                    fprintf(stderr, "HALOPAD APP: using bundled game data\n");
+                /* Keep the success latch until dismissal: no second core on repeated taps. */
+                setenv("HALOPAD_GAME_ROOT", root.UTF8String, 1);
+                if (self.ready) self.ready();
+            } else {
+                self.status.text = bundledMismatch ? [problem stringByAppendingString:@"\n\nBundled game data in this app does not match this build."] : problem;
                 self.importing = NO;
                 self.importButtons.userInteractionEnabled = YES;
                 self.importButtons.alpha = 1;
-            } else {
-                /* Keep the success latch until dismissal: no second core on repeated taps. */
-                setenv("HALOPAD_GAME_ROOT", documents_game_dir().UTF8String, 1);
-                if (self.ready) self.ready();
             }
         });
     });

@@ -68,7 +68,7 @@ include `--xbox` in the builder step and import your Xbox disc separately.
 - An Apple Development identity and a development provisioning profile for
   `dev.halopad.HaloPad`, including the **specific device UDID**, Extended Virtual
   Addressing and Increased Memory Limit.
-- A game-data package prepared for the **exact build** being installed.
+- A game-data package prepared for the **exact build** being installed, or a private `bundled-game` tree packed by the route in [CE-UNSIGNED-BUILD.md](CE-UNSIGNED-BUILD.md). Signing identity `dev.halopad.HaloPad.robby` is applied outside this repository. The bundle id stays `dev.halopad.HaloPad`.
 
 Use a profile that includes the device being installed. The maintainer's iPad
 development profile passed these checks for the private build-138 installation;
