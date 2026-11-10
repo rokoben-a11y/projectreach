@@ -25,6 +25,7 @@
 #import "HaloPadOverlay.h"
 #include "halopad_menu_touch.h"
 #include "../runtime/halopad_log.h"
+#import "../apple/halopad_host.h"
 #include <pthread.h>
 
 int halopad_core_run(void);
@@ -1165,7 +1166,7 @@ static void touch_selftest(void)
 @implementation HPGameViewController
 - (void)loadView
 {
-    UIView *v = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    UIView *v = [[UIView alloc] initWithFrame:CGRectZero];
     v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     v.backgroundColor = UIColor.blackColor;
     v.multipleTouchEnabled = NO;
@@ -1297,8 +1298,20 @@ static void touch_selftest(void)
         l.frame = game_view.bounds;
         if (scale > 0) l.contentsScale = scale;
     }
+    /* The scene's points and this view's display scale. Layout runs again on a fold. */
+    halopad_host_set_screen_size(self.view.window.windowScene.coordinateSpace.bounds, scale);
     [self applyDisplay];
     [self.view bringSubviewToFront:overlay];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
+{
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        (void)size;
+        (void)context;
+        [self.view setNeedsLayout];
+        [self.view layoutIfNeeded];
+    }];
 }
 /* ---- the overlay's requests ---- */
 - (void)applyDisplay
@@ -1334,7 +1347,7 @@ static void touch_selftest(void)
     NSString *build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"?";
     NSMutableArray *pads = [NSMutableArray array];
     for (GCController *c in GCController.controllers) [pads addObject:c.vendorName ?: @"controller"];
-    CGSize screen = UIScreen.mainScreen.bounds.size;
+    CGSize screen = self.view.window.windowScene.coordinateSpace.bounds.size;
     return [NSString stringWithFormat:@"HaloPad %@ (build %@)\nDevice: %s, %@ %@, %.0fx%.0f points\nHalo map: %@\n"
             "Frames presented: %d\nControllers: %@\nTouch controls: %@; display %@",
             ver, build, u.machine, UIDevice.currentDevice.systemName, UIDevice.currentDevice.systemVersion,

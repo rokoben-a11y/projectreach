@@ -269,11 +269,15 @@ def package(exe, out, work, target=TARGET, identity=None, provisioning=None, pro
         'CFBundleDisplayName': 'HaloPad', 'CFBundlePackageType': 'APPL', 'CFBundleVersion': app_build,
         'CFBundleShortVersionString': app_version, 'CFBundleSupportedPlatforms': ['iPhoneSimulator' if 'simulator' in target else 'iPhoneOS'],
         'DTPlatformName': 'macosx' if mac else ('iphonesimulator' if 'simulator' in target else 'iphoneos'),
-        'MinimumOSVersion': minimum, 'UIDeviceFamily': [1, 2], 'UIRequiresFullScreen': True, 'UILaunchScreen': {},
+        'MinimumOSVersion': minimum, 'UIDeviceFamily': [1, 2], 'UILaunchScreen': {},
         'UIStatusBarHidden': True,
         'UISupportedInterfaceOrientations': ['UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'],
         'UISupportedInterfaceOrientations~ipad': ['UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'],
-        'UIApplicationSceneManifest': {'UIApplicationSupportsMultipleScenes': False},
+        # One scene. iPhone Duo resizes it (TN3192); a full-screen opt-out is not set.
+        'UIApplicationSceneManifest': {
+            'UIApplicationSupportsMultipleScenes': False,
+            'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [
+                {'UISceneConfigurationName': 'HaloPad', 'UISceneDelegateClassName': 'HPSceneDelegate'}]}},
         # the player's Halo folder is copied into Documents (Files app, Finder) or picked from a folder
         'UIFileSharingEnabled': True, 'LSSupportsOpeningDocumentsInPlace': True,
         # Halo Xbox's system link finds and joins games on the local network
@@ -285,6 +289,13 @@ def package(exe, out, work, target=TARGET, identity=None, provisioning=None, pro
         del info['MinimumOSVersion'], info['UIRequiredDeviceCapabilities']
         info.update({'CFBundleSupportedPlatforms': ['MacOSX'], 'LSMinimumSystemVersion': minimum, 'UIDeviceFamily': [2],
                      'LSApplicationCategoryType': 'public.app-category.action-games'})
+    elif 'simulator' not in target:
+        sdk_version = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'],
+                                     check=True, capture_output=True, text=True).stdout.strip()
+        if not sdk_version:
+            raise RuntimeError('xcrun --sdk iphoneos --show-sdk-version returned no version')
+        info['DTPlatformVersion'] = sdk_version
+        info['DTSDKName'] = 'iphoneos' + sdk_version
     if xbox:
         info['NSBonjourServices'] = ['_halopad._udp']
         shutil.copy2(ROOT / "port/ios/assets/ChooserBackground.png", res / "ChooserBackground.png")

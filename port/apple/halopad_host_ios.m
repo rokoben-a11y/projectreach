@@ -11,23 +11,77 @@
 #import <UIKit/UIKit.h>
 #import "halopad_host.h"
 #include "../runtime/halopad_input.h"
+#include <math.h>
+#include <pthread.h>
 
 int halopad_host_input_off;                        /* tests drive input themselves */
 static int pointer_captured, cursor_visible = 1;
 
 void halopad_host_app(void) {}                     /* UIApplication belongs to the app shell */
 
-/* The device's main screen in pixels, landscape (Halo's desktop). */
+/* Halo's desktop in pixels, landscape. The shell publishes the window scene on the main
+   thread as the view lays out; a fold changes it, so this is not read once at launch. */
+static int32_t scene_w, scene_h;
+static pthread_mutex_t scene_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int scene_pixels(CGSize points, CGFloat scale, int32_t *w, int32_t *h)
+{
+    if (points.width <= 0 || points.height <= 0 || scale <= 0) return 0;
+    int32_t a = (int32_t)llround((double)points.width * (double)scale);
+    int32_t c = (int32_t)llround((double)points.height * (double)scale);
+    if (a <= 0 || c <= 0) return 0;
+    *w = a > c ? a : c;                          /* landscape: Halo's desktop is wider than it is tall */
+    *h = a > c ? c : a;
+    return 1;
+}
+
+static void cache_scene(int32_t w, int32_t h)
+{
+    pthread_mutex_lock(&scene_lock);
+    scene_w = w;
+    scene_h = h;
+    pthread_mutex_unlock(&scene_lock);
+}
+
+static int cached_scene(int32_t *w, int32_t *h)
+{
+    pthread_mutex_lock(&scene_lock);
+    *w = scene_w;
+    *h = scene_h;
+    pthread_mutex_unlock(&scene_lock);
+    return *w > 0 && *h > 0;
+}
+
+void halopad_host_set_screen_size(CGRect bounds, CGFloat scale)
+{
+    int32_t w, h;
+    if (scene_pixels(bounds.size, scale, &w, &h)) cache_scene(w, h);
+}
+
+/* The first connected window scene, in pixels. Empty until a scene has a real size. */
+static void read_connected_scene(int32_t *w, int32_t *h)
+{
+    *w = 0;
+    *h = 0;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (scene_pixels(windowScene.coordinateSpace.bounds.size,
+                         windowScene.screen.traitCollection.displayScale, w, h))
+            cache_scene(*w, *h);
+        return;
+    }
+}
+
 void halopad_host_screen_size(int32_t *w, int32_t *h)
 {
-    CGRect b = UIScreen.mainScreen.nativeBounds;
-    int32_t a = (int32_t)b.size.width, c = (int32_t)b.size.height;
-    *w = a > c ? a : c;
-    *h = a > c ? c : a;
+    if (cached_scene(w, h)) return;
+    /* One wait for the shell's scene. dispatch_sync from the main thread deadlocks. */
+    if ([NSThread isMainThread]) read_connected_scene(w, h);
+    else dispatch_sync(dispatch_get_main_queue(), ^{ read_connected_scene(w, h); });
 }
 
 /* Events from the shell (UIKit's main thread) wait here until Halo's thread pumps. */
-#include <pthread.h>
 #define QSIZE 1024u
 static hp_input queue_ev[QSIZE];
 static uint32_t q_head, q_tail;

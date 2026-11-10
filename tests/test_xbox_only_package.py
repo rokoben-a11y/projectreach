@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,9 @@ class XboxOnlyPackageTests(unittest.TestCase):
                     'guest_adaptation': {'name': 'none'}, 'renderer': 'angle-metal'}))
                 exe = root / 'executable'
                 exe.write_bytes(b'inert executable')
+                def run_ok(argv, **kwargs):
+                    stdout = '27.0\n' if argv[:4] == ['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'] else ''
+                    return subprocess.CompletedProcess(argv, 0, stdout, '')
                 with patch.object(builder, 'XBOX_OUT', engine), \
                         patch.object(builder, 'xbox_parts', return_value=['fixture-engine']), \
                         patch.object(builder, 'xbox_build_folder', return_value=engine), \
@@ -36,7 +40,7 @@ class XboxOnlyPackageTests(unittest.TestCase):
                         patch.object(builder, 'compile_icon', return_value={}), \
                         patch.object(builder.run_core, 'IMAGE', root / 'nonexistent-PC-data'), \
                         patch.object(builder, 'create_identity', side_effect=AssertionError('PC identity read')), \
-                        patch.object(builder.subprocess, 'run') as run:
+                        patch.object(builder.subprocess, 'run', side_effect=run_ok) as run:
                     app = builder.package(exe, root / 'out', root, target, pc=False,
                                           app_version='0.3.8', app_build='2')
                 commands = [call.args[0] for call in run.call_args_list]
@@ -50,6 +54,13 @@ class XboxOnlyPackageTests(unittest.TestCase):
                 self.assertEqual(info['CFBundleShortVersionString'], '0.3.8')
                 self.assertEqual(info['CFBundleVersion'], '2')
                 self.assertEqual(info['NSBonjourServices'], ['_halopad._udp'])
+                self.assertNotIn('UIRequiresFullScreen', info)
+                self.assertEqual(info['UIApplicationSceneManifest']['UISceneConfigurations'][
+                    'UIWindowSceneSessionRoleApplication'][0]['UISceneDelegateClassName'], 'HPSceneDelegate')
+                if 'macabi' not in target:
+                    self.assertEqual(info['DTPlatformVersion'], '27.0')
+                    self.assertEqual(info['DTSDKName'], 'iphoneos27.0')
+                    self.assertEqual(info['UIDeviceFamily'], [1, 2])
                 self.assertEqual({str(p.relative_to(resources / 'data')) for p in (resources / 'data').rglob('*') if p.is_file()},
                                  {'xbox/halo_guest.elf', 'xbox/brokers.txt', 'xbox/build.json'})
 
