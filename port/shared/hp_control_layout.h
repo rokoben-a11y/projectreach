@@ -43,7 +43,14 @@ typedef struct hp_layout_request {
     double control_size; /* 0.70 .. 1.35 */
     int ring_spacing;    /* 0 compact gaps, 1 normal, 2 spread */
     int left_handed;
+    int bottom_band;     /* regular x regular: keyboard band on the safe rect's bottom */
 } hp_layout_request;
+
+/* A reserved region in the same coordinates as the safe rect. Active fold and camera
+   regions only; the caller drops inactive ones. Shape decides the avoidance. */
+typedef struct hp_layout_region {
+    double x, y, w, h;
+} hp_layout_region;
 
 static inline int hp_layout_size_class(double safe_w, double safe_h)
 {
@@ -70,6 +77,9 @@ static inline void hp_layout_compute(const hp_layout_request *in, double fit, hp
 {
     double safe_x = in->safe_x, safe_y = in->safe_y, safe_w = in->safe_w, safe_h = in->safe_h;
     int large = hp_layout_size_class(safe_w, safe_h) == HP_LAYOUT_LARGE;
+    /* The raised inset is the tablet grip. A regular scene asks for the bottom band
+       instead, so the same safe rect does not float the grip in the middle. */
+    int raised = large && !in->bottom_band;
     int wide = large && safe_w >= 1000.0;
     int spacing = in->ring_spacing;
     double control = in->control_size;
@@ -109,7 +119,7 @@ static inline void hp_layout_compute(const hp_layout_request *in, double fit, hp
     gap = gaps[spacing] * k;
     if (fit >= 1.0 && gap < 8.0) gap = 8.0;
     if (gap < 4.0) gap = 4.0;
-    inset_floor = (large ? 36.0 : 20.0) * k;
+    inset_floor = (raised ? 36.0 : 20.0) * k;
     if (inset_floor < 16.0) inset_floor = 16.0;
     inset_cap = 160.0 - stick / 2.0;
     inset = inset_cap < inset_floor ? inset_cap : inset_floor;
@@ -118,8 +128,8 @@ static inline void hp_layout_compute(const hp_layout_request *in, double fit, hp
     pitch = action + gap;
     row_over = pitch + action / 2.0 - stick / 2.0;
     if (row_over < 0.0) row_over = 0.0;
-    bottom_inset = large ? (160.0 > 128.0 * k ? 160.0 : 128.0 * k)
-                         : (20.0 > 32.0 * k ? 20.0 : 32.0 * k);
+    bottom_inset = raised ? (160.0 > 128.0 * k ? 160.0 : 128.0 * k)
+                          : (20.0 > 32.0 * k ? 20.0 : 32.0 * k);
     bottom = safe_y + safe_h - bottom_inset - row_over;
     mid_y = bottom - stick / 2.0;
     low_y = mid_y + pitch;
@@ -160,6 +170,10 @@ static inline void hp_layout_compute(const hp_layout_request *in, double fit, hp
     centers[HP_LAYOUT_SCORES][1] = safe_y + utility / 2.0 + 12.0;
     centers[HP_LAYOUT_PAUSE][0] = safe_x + safe_w / 2.0 + utility / 2.0 + 6.0;
     centers[HP_LAYOUT_PAUSE][1] = centers[HP_LAYOUT_SCORES][1];
+    if (in->bottom_band) {
+        centers[HP_LAYOUT_SCORES][1] = centers[HP_LAYOUT_MOVE][1];
+        centers[HP_LAYOUT_PAUSE][1] = centers[HP_LAYOUT_MOVE][1];
+    }
     dias[HP_LAYOUT_MOVE] = dias[HP_LAYOUT_LOOK] = stick;
     dias[HP_LAYOUT_FIRE] = fire;
     dias[HP_LAYOUT_SCORES] = dias[HP_LAYOUT_PAUSE] = utility;
@@ -205,6 +219,100 @@ static inline void hp_layout_frames(const hp_layout_request *in, hp_layout_box *
         if (hp_layout_fits(in, out)) return;
     }
     for (i = 0; i < HP_LAYOUT_SLOT_COUNT; i++) hp_layout_clamp(in, &out[i]);
+}
+
+static inline int hp_layout_region_hits(double x, double y, double w, double h,
+                                        double sx, double sy, double sw, double sh)
+{
+    return w > 0.5 && h > 0.5 && x < sx + sw && x + w > sx && y < sy + sh && y + h > sy;
+}
+
+static inline int hp_layout_box_hits_region(const hp_layout_box *box, double x, double y, double w, double h)
+{
+    return hp_layout_region_hits(x, y, w, h, box->x, box->y, box->w, box->h);
+}
+
+/* A horizontal fold (wider than it is tall, across the scene) splits the safe rect.
+   The grip prefers the lower piece: that is the keyboard side of a laptop fold. */
+static inline void hp_layout_clip_folds(hp_layout_request *req, const hp_layout_region *regions, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        double x = regions[i].x, y = regions[i].y, w = regions[i].w, h = regions[i].h;
+        double fold_bottom, safe_bottom, below, above;
+        if (!hp_layout_region_hits(x, y, w, h, req->safe_x, req->safe_y, req->safe_w, req->safe_h)) continue;
+        if (!(w >= h && w >= req->safe_w * 0.5)) continue;
+        fold_bottom = y + h;
+        safe_bottom = req->safe_y + req->safe_h;
+        below = safe_bottom - fold_bottom;
+        above = y - req->safe_y;
+        /* The open scene's grip belongs under the fold, with the keyboard. */
+        if (req->bottom_band && below > 1.0) {
+            req->safe_y = fold_bottom;
+            req->safe_h = below;
+        } else if (below >= above && below > 1.0) {
+            req->safe_y = fold_bottom;
+            req->safe_h = below;
+        } else if (above > 1.0) {
+            req->safe_h = above;
+        }
+    }
+}
+
+static inline int hp_layout_hits_other(const hp_layout_box *box, const hp_layout_box *boxes, int nboxes, int self)
+{
+    int i;
+    for (i = 0; i < nboxes; i++)
+        if (i != self && hp_layout_boxes_overlap(box, &boxes[i])) return 1;
+    return 0;
+}
+
+/* Move a control out of a reserved region without landing on another control.
+   The shortest exit that stays in the safe rect wins. */
+static inline void hp_layout_avoid_one(const hp_layout_request *in, hp_layout_box *boxes, int nboxes, int self,
+                                       double x, double y, double w, double h)
+{
+    hp_layout_box *box = &boxes[self];
+    hp_layout_box candidates[4];
+    int c, best = -1;
+    double best_dist = 0;
+    if (!hp_layout_box_hits_region(box, x, y, w, h)) return;
+    candidates[0] = *box; candidates[0].x = x - box->w;
+    candidates[1] = *box; candidates[1].x = x + w;
+    candidates[2] = *box; candidates[2].y = y - box->h;
+    candidates[3] = *box; candidates[3].y = y + h;
+    for (c = 0; c < 4; c++) {
+        double dist, dy;
+        hp_layout_clamp(in, &candidates[c]);
+        if (hp_layout_box_hits_region(&candidates[c], x, y, w, h)) continue;
+        if (hp_layout_hits_other(&candidates[c], boxes, nboxes, self)) continue;
+        dist = candidates[c].x - box->x;
+        dy = candidates[c].y - box->y;
+        if (dist < 0) dist = -dist;
+        if (dy < 0) dy = -dy;
+        dist += dy;
+        if (best < 0 || dist < best_dist) { best = c; best_dist = dist; }
+    }
+    if (best >= 0) *box = candidates[best];
+}
+
+static inline void hp_layout_avoid_regions(const hp_layout_request *in, hp_layout_box *boxes, int nboxes,
+                                          const hp_layout_region *regions, int nregions)
+{
+    int pass, r, i;
+    for (pass = 0; pass < 2; pass++)
+        for (r = 0; r < nregions; r++)
+            for (i = 0; i < nboxes; i++)
+                hp_layout_avoid_one(in, boxes, nboxes, i, regions[r].x, regions[r].y, regions[r].w, regions[r].h);
+}
+
+/* Frames for a safe rect, then off any reserved regions that cross it. */
+static inline void hp_layout_place(hp_layout_request req, const hp_layout_region *regions, int nregions,
+                                   hp_layout_box *out)
+{
+    hp_layout_clip_folds(&req, regions, nregions);
+    hp_layout_frames(&req, out);
+    hp_layout_avoid_regions(&req, out, HP_LAYOUT_SLOT_COUNT, regions, nregions);
 }
 
 #endif

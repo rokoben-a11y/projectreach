@@ -3,6 +3,7 @@
 #import "HaloPadOverlay.h"
 #import <GameController/GameController.h>
 #include <math.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "../runtime/halopad_input.h"
@@ -531,6 +532,13 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
                 name:UIApplicationDidBecomeActiveNotification object:nil];
         }
         [self refreshControllerVisibility];
+        /* A fold changes both size classes. Layout again so the grip follows the scene. */
+        [self registerForTraitChanges:@[[UITraitHorizontalSizeClass class], [UITraitVerticalSizeClass class]]
+                           withHandler:^(__kindof id<UITraitEnvironment> traitEnvironment, UITraitCollection *previous) {
+            (void)traitEnvironment;
+            (void)previous;
+            [weak setNeedsLayout];
+        }];
     }
     return self;
 }
@@ -826,21 +834,38 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
 }
 
 /* ---- layout: shared size-class geometry, saved per safe-area class ----
-   Compact is the lower grip (short or narrow safe area, including an unknown
-   outer screen). Large is the raised tablet grip. Idiom does not choose it. */
+   Compact is the lower grip (short or narrow safe area, including the cover).
+   Large is the raised tablet grip. Regular × regular — the open inner display —
+   uses the bottom band instead of that raised grip. Idiom does not choose it. */
 
 - (BOOL)layoutLarge
 {
     CGRect safe = self.safe;
     return hp_layout_size_class(safe.size.width, safe.size.height) == HP_LAYOUT_LARGE;
 }
+/* Tech Talk 111463: the inner display is regular in both size classes. The scene's
+   own bounds are what gets laid out; a compact cover never takes this branch. */
+- (BOOL)innerBottomBand
+{
+    if (self.traitCollection.horizontalSizeClass != UIUserInterfaceSizeClassRegular) return NO;
+    if (self.traitCollection.verticalSizeClass != UIUserInterfaceSizeClassRegular) return NO;
+    CGRect scene = self.window.windowScene ? self.window.windowScene.coordinateSpace.bounds : self.bounds;
+    return scene.size.width > 0.0 && scene.size.height > 0.0;
+}
+- (NSString *)layoutName
+{
+    if (self.innerBottomBand) return @"bottom";
+    return self.layoutLarge ? @"large" : @"compact";
+}
 - (NSString *)key:(NSString *)what
 {
-    return [NSString stringWithFormat:@"HaloPad.%@.v4.%@", self.layoutLarge ? @"large" : @"compact", what];
+    return [NSString stringWithFormat:@"HaloPad.%@.v4.%@", self.layoutName, what];
 }
 - (NSString *)legacyKey:(NSString *)what
 {
-    BOOL pad = self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone;
+    BOOL pad;
+    if (self.innerBottomBand) return nil; /* a saved tablet grip is the centered layout */
+    pad = self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone;
     if (self.layoutLarge != pad) return nil;
     return [NSString stringWithFormat:@"HaloPad.%@.v3.%@", pad ? @"tablet" : @"phone", what];
 }
@@ -853,6 +878,91 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
 }
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 
+/* Active fold and camera regions, if this SDK has them (iOS 27.1). Both kinds are
+   queried; shape tells a vertical fold from a horizontal one and from a camera. */
+static NSArray *HPActiveRegions(UIView *view, NSInteger kind)
+{
+    SEL sel = NSSelectorFromString(@"reservedRegionsOfKind:options:");
+    NSMethodSignature *sig;
+    NSInvocation *inv;
+    NSUInteger options = 0;
+    __unsafe_unretained id result = nil;
+    if (![view respondsToSelector:sel]) {
+        sel = NSSelectorFromString(@"reservedRegionsWithKind:options:");
+        if (![view respondsToSelector:sel]) return nil;
+    }
+    sig = [view methodSignatureForSelector:sel];
+    if (!sig || strcmp(sig.methodReturnType, @encode(id)) != 0) return nil;
+    inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = view;
+    inv.selector = sel;
+    [inv setArgument:&kind atIndex:2];
+    [inv setArgument:&options atIndex:3];
+    [inv invoke];
+    [inv getReturnValue:&result];
+    return [result isKindOfClass:NSArray.class] ? result : nil;
+}
+static CGRect HPRegionFrame(id region)
+{
+    SEL frameSel = @selector(frame);
+    if ([region respondsToSelector:frameSel]) {
+        NSMethodSignature *sig = [region methodSignatureForSelector:frameSel];
+        if (sig && sig.methodReturnLength == sizeof(CGRect)) {
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            CGRect frame = CGRectZero;
+            inv.target = region;
+            inv.selector = frameSel;
+            [inv invoke];
+            [inv getReturnValue:&frame];
+            if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame)) return frame;
+        }
+    }
+    if ([region respondsToSelector:@selector(valueForKey:)]) {
+        id value = [region valueForKey:@"frame"];
+        if ([value isKindOfClass:NSValue.class]) return [value CGRectValue];
+    }
+    return CGRectNull;
+}
+- (int)copyReservedRegions:(hp_layout_region *)out limit:(int)limit
+{
+    int n = 0;
+    NSInteger kind;
+    for (kind = 0; kind <= 1 && n < limit; kind++) {
+        for (id region in HPActiveRegions(self, kind)) {
+            CGRect frame;
+            if (n >= limit) break;
+            frame = HPRegionFrame(region);
+            if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) continue;
+            out[n].x = frame.origin.x;
+            out[n].y = frame.origin.y;
+            out[n].w = frame.size.width;
+            out[n].h = frame.size.height;
+            n++;
+        }
+    }
+    return n;
+}
+- (void)clearViews:(NSArray<UIView *> *)views regions:(const hp_layout_region *)regions count:(int)count request:(const hp_layout_request *)request
+{
+    hp_layout_box boxes[24];
+    int n = 0, i;
+    if (count <= 0) return;
+    for (UIView *v in views) {
+        if (!v || n >= 24) continue;
+        boxes[n].x = v.frame.origin.x;
+        boxes[n].y = v.frame.origin.y;
+        boxes[n].w = v.frame.size.width;
+        boxes[n].h = v.frame.size.height;
+        n++;
+    }
+    hp_layout_avoid_regions(request, boxes, n, regions, count);
+    i = 0;
+    for (UIView *v in views) {
+        if (!v || i >= n) continue;
+        v.center = CGPointMake(boxes[i].x + boxes[i].w / 2.0, boxes[i].y + boxes[i].h / 2.0);
+        i++;
+    }
+}
 - (void)place:(UIView *)v frame:(CGRect)f
 {
     NSString *ident = v.accessibilityIdentifier;
@@ -876,15 +986,19 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
 {
     [super layoutSubviews];
     CGRect safe = self.safe;
+    hp_layout_region regions[8];
+    int nregions = [self copyReservedRegions:regions limit:8];
     hp_layout_request request = {
         .safe_x = safe.origin.x, .safe_y = safe.origin.y,
         .safe_w = safe.size.width, .safe_h = safe.size.height,
         .control_size = HPSettings.shared.controlSize,
         .ring_spacing = (int)HPSettings.shared.ringSpacing,
         .left_handed = HPSettings.shared.leftHanded,
+        .bottom_band = [self innerBottomBand],
     };
+    hp_layout_request placed = request;
     hp_layout_box boxes[HP_LAYOUT_SLOT_COUNT];
-    hp_layout_frames(&request, boxes);
+    hp_layout_place(placed, regions, nregions, boxes);
     hp_layout_box move = boxes[HP_LAYOUT_MOVE], look = boxes[HP_LAYOUT_LOOK];
     [self place:_move frame:CGRectMake(move.x, move.y, move.w, move.h)];
     [self place:_aim frame:CGRectMake(look.x, look.y, look.w, look.h)];
@@ -896,6 +1010,8 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
     CGFloat side = 44, inset = 12;
     _menuButton.frame = CGRectMake(CGRectGetMaxX(safe) - side - inset, CGRectGetMinY(safe) + inset, side, side);
     _fps.frame = CGRectMake(CGRectGetMaxX(safe) - side - inset - 86, CGRectGetMinY(safe) + inset + 8, 76, 24);
+    [self clearViews:[@[_move, _aim, _menuButton, _fps] arrayByAddingObjectsFromArray:_buttons]
+            regions:regions count:nregions request:&placed];
     CGFloat hintWidth = fmin(440, safe.size.width - 32);
     CGSize hintSize = [_bindingHint sizeThatFits:CGSizeMake(hintWidth - 24, CGFLOAT_MAX)];
     _bindingHint.frame = CGRectMake(CGRectGetMidX(safe) - hintWidth / 2,

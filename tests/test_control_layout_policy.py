@@ -100,6 +100,47 @@ class ControlLayoutPolicyTests(unittest.TestCase):
         roomy = self.live['vectors'][0]
         self.assertGreater(roomy['frames'][2][2], roomy['frames'][3][2])
 
+    def test_regular_scene_anchors_the_grip_to_the_keyboard_band(self):
+        same = [vector for vector in self.live['vectors'] if vector['safe'][2] == 867.0 and vector['safe'][3] == 635.0]
+        raised = next(vector for vector in same if not vector['bottom_band'])
+        band = next(vector for vector in same if vector['bottom_band'])
+        self.assertEqual(raised['size_class'], 'large')
+        self.assertLess(self._bottom_gap(band), band['safe'][3] * 0.34)
+        self.assertGreater(self._bottom_gap(raised), raised['safe'][3] * 0.34)
+        grip_top = min(frame[1] for frame in band['frames'])
+        _, sy, _, sh = band['safe']
+        self.assertGreater(grip_top, sy + sh * 0.40)
+
+    def test_bottom_band_stays_off_the_fold_and_camera(self):
+        for case in self.live['avoidance']:
+            frames = case['frames']
+            self.assertEqual(len(frames), 15)
+            for frame in frames:
+                self.assertGreaterEqual(min(frame[2], frame[3]), 44)
+                for region in case['regions']:
+                    self.assertFalse(boxes_overlap(frame, region), (frame, region))
+            for i, left in enumerate(frames):
+                for right in frames[i + 1:]:
+                    self.assertFalse(boxes_overlap(left, right))
+            horizontal = [region for region in case['regions'] if region[2] >= region[3] and region[2] > 100]
+            for region in horizontal:
+                fold_bottom = region[1] + region[3]
+                for frame in frames:
+                    self.assertGreaterEqual(frame[1], fold_bottom - 0.05)
+
+    def test_overlay_chooses_the_bottom_band_from_size_classes(self):
+        text = OVERLAY.read_text()
+        method = text.split('- (BOOL)innerBottomBand', 1)[1].split('\n}', 1)[0]
+        self.assertIn('UIUserInterfaceSizeClassRegular', method)
+        self.assertIn('horizontalSizeClass', method)
+        self.assertIn('verticalSizeClass', method)
+        self.assertIn('coordinateSpace.bounds', method)
+        self.assertNotIn('userInterfaceIdiom', method)
+        self.assertNotIn('UIScreen', method)
+        self.assertNotIn('700', method)
+        self.assertIn('reservedRegionsOfKind:', text)
+        self.assertIn('.bottom_band = [self innerBottomBand]', text)
+
     def _bottom_gap(self, vector):
         _, sy, _, sh = vector['safe']
         move = vector['frames'][0]
