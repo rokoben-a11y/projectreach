@@ -62,7 +62,8 @@ class MinimumOSTests(unittest.TestCase):
                     def run(argv, **kwargs):
                         if 'actool' in argv:
                             Path(argv[argv.index('--output-partial-info-plist') + 1]).write_bytes(plistlib.dumps({}))
-                        return subprocess.CompletedProcess(argv, 0)
+                        stdout = '27.0\n' if argv[:4] == ['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'] else ''
+                        return subprocess.CompletedProcess(argv, 0, stdout, '')
                     with patch.object(builder, 'ROOT', root), patch.object(builder, 'XBOX_OUT', root / 'xbox'), \
                             patch.object(builder.run_core, 'IMAGE', image), \
                             patch.object(builder, 'xbox_parts', return_value=['xbox-library'] if xbox else []), \
@@ -81,6 +82,25 @@ class MinimumOSTests(unittest.TestCase):
                     self.assertEqual(info['DTPlatformName'], 'macosx' if mac else ('iphonesimulator' if 'simulator' in target else 'iphoneos'))
                     expected = ('14.4' if xbox else '14.0') if mac else ('17.4' if xbox else '17.0')
                     self.assertEqual(info['LSMinimumSystemVersion' if mac else 'MinimumOSVersion'], expected)
+                    self.assertNotIn('UIRequiresFullScreen', info)
+                    self.assertEqual(info['UILaunchScreen'], {})
+                    self.assertEqual(info['UISupportedInterfaceOrientations'], [
+                        'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
+                    self.assertEqual(info['UIApplicationSceneManifest'], {
+                        'UIApplicationSupportsMultipleScenes': False,
+                        'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [
+                            {'UISceneConfigurationName': 'HaloPad', 'UISceneDelegateClassName': 'HPSceneDelegate'}]}})
+                    if mac:
+                        self.assertNotIn('DTPlatformVersion', info)
+                        self.assertNotIn('DTSDKName', info)
+                    elif 'simulator' in target:
+                        self.assertEqual(info['UIDeviceFamily'], [1, 2])
+                        self.assertNotIn('DTPlatformVersion', info)
+                        self.assertNotIn('DTSDKName', info)
+                    else:
+                        self.assertEqual(info['UIDeviceFamily'], [1, 2])
+                        self.assertEqual(info['DTPlatformVersion'], '27.0')
+                        self.assertEqual(info['DTSDKName'], 'iphoneos27.0')
                     icon = next(call.args[0] for call in commands.call_args_list if 'actool' in call.args[0])
                     self.assertEqual(icon[icon.index('--minimum-deployment-target') + 1], expected)
 

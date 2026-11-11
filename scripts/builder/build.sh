@@ -37,6 +37,7 @@ cd "$ROOT"
 PY=.venv/bin/python
 export HALOPAD_BUILDER=1                              # steps leave tracked repository files unchanged
 INPUT=""; OUT="$ROOT/generated/builder"; IPA=""; KEY_FILE=""; MAC=0; XBOX=0; PC=1
+STOCK=""; REFERENCE=""; PRODUCT_ID_FILE=""
 XBOX_RECORD=""; XBOX_LATEST=0; APP_VERSION=0.3; APP_BUILD=1
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -50,6 +51,9 @@ while [ $# -gt 0 ]; do
 	--app-version) APP_VERSION=$2; shift ;;
 	--app-build) APP_BUILD=$2; shift ;;
 	--product-key-file) KEY_FILE=$2; shift ;;
+	--installed-stock) STOCK=$2; shift ;;             # original 1.10 tree, not an installer and not old modules
+	--reference-root) REFERENCE=$2; shift ;;          # data/reference from the player's own previous app
+	--product-id-file) PRODUCT_ID_FILE=$2; shift ;;   # existing product-id.txt; the key is not read
 	--jobs) shift ;;                                  # accepted for PadMint; the steps size themselves
 	-*) echo "unknown option $1" >&2; exit 2 ;;
 	*) INPUT=$1 ;;
@@ -74,12 +78,26 @@ if [ -n "$XBOX_RECORD" ]; then
 	# Validate and snapshot before tools/build work; later steps use these bytes.
 	XBOX_RELEASE=$(python3 scripts/xbox/release.py --record "$XBOX_RECORD")
 fi
+if [ -n "$STOCK" ] && [ "$PC" = 0 ]; then
+	echo "Installed stock builds Custom Edition. Do not combine it with --xbox-only." >&2; exit 2
+fi
+if [ -n "$STOCK" ] && [ -n "$KEY_FILE" ]; then
+	echo "Installed stock does not take a product key. Pass the existing product-id.txt with --product-id-file." >&2; exit 2
+fi
 if [ $PC = 0 ] && [ -n "$KEY_FILE" ]; then
 	echo "An Xbox-only build does not use --product-key-file; omit it or choose the PC installer." >&2; exit 2
 fi
-if [ $PC = 1 ]; then
+if [ $PC = 1 ] && [ -z "$STOCK" ]; then
 	[ -f "$INPUT" ] && INPUT=$(dirname "$INPUT")
 	[ -d "$INPUT" ] || { echo "Select HaloCESetup.exe for PC, an Xbox ISO/XISO for Xbox, or use --xbox-only." >&2; exit 2; }
+fi
+if [ -n "$STOCK" ]; then
+	[ -d "$STOCK" ] || { echo "Installed stock directory not found." >&2; exit 2; }
+	[ -n "$REFERENCE" ] && [ -d "$REFERENCE" ] || { echo "Pass --reference-root Payload/HaloPad.app/data/reference from your own previous app." >&2; exit 2; }
+	[ -n "$PRODUCT_ID_FILE" ] && [ -f "$PRODUCT_ID_FILE" ] || {
+		echo "Halo reads HKLM\\Software\\Microsoft\\Microsoft Games\\Halo CE\\PID and DigitalProductID at startup. Those values are not in haloce.exe or the maps, and this path does not derive them without HaloCESetup.exe (PidGen.dll) plus the product key. Pass Payload/HaloPad.app/data/config/runtime/product-id.txt from your own app with --product-id-file." >&2
+		exit 3
+	}
 fi
 [ -n "$IPA" ] || { [ $MAC = 1 ] && IPA="$OUT/HaloPad-mac.zip" || IPA="$OUT/HaloPad.ipa"; }
 mkdir -p "$OUT"
@@ -97,8 +115,10 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 step "checking tools"
 command -v xcodebuild >/dev/null || { echo "Install Xcode before building HaloPad." >&2; exit 2; }
 if [ $PC = 1 ]; then
-for tool in 7zz wine winetricks lld-link /opt/homebrew/opt/llvm/bin/clang; do
-	command -v "$tool" >/dev/null || { echo "missing $tool: install Xcode, then brew install sevenzip winetricks llvm lld; for Wine see docs/INSTALL-WINE.md" >&2; exit 2; }
+PC_TOOLS="lld-link /opt/homebrew/opt/llvm/bin/clang"
+[ -n "$STOCK" ] || PC_TOOLS="7zz wine winetricks $PC_TOOLS"
+for tool in $PC_TOOLS; do
+	command -v "$tool" >/dev/null || { echo "missing $tool: install Xcode, then brew install llvm lld; installer builds also need sevenzip, winetricks and Wine (docs/INSTALL-WINE.md)" >&2; exit 2; }
 done
 fi
 if [ $XBOX = 1 ]; then
@@ -111,7 +131,8 @@ if [ $XBOX = 1 ]; then
 	for tool in clang llvm-ar llvm-readelf llvm-nm llvm-objdump; do
 		[ -x "$XBOX_LLVM/$tool" ] || { echo "missing $XBOX_LLVM/$tool for the Xbox edition: brew install llvm" >&2; exit 2; }
 	done
-	[ -f /opt/homebrew/include/SDL3/SDL_gamepad.h ] || { echo "missing SDL3 headers for the Xbox edition: brew install sdl3" >&2; exit 2; }
+	SDL3_HEADER=${HALOPAD_SDL3_HEADER:-/opt/homebrew/include/SDL3/SDL_gamepad.h}
+	[ -f "$SDL3_HEADER" ] || { echo "missing SDL3 headers for the Xbox edition: brew install sdl3" >&2; exit 2; }
 fi
 if [ $PC = 0 ]; then
 	PY=python3
@@ -122,7 +143,7 @@ elif ! "$PY" -c 'import pefile, capstone, SCons' 2>/dev/null; then   # a fresh c
 fi
 
 
-if [ $PC = 1 ]; then
+if [ $PC = 1 ] && [ -z "$STOCK" ]; then
 step "finding your installer and the 1.10 update by hash"
 INSTALLER_SHA=150e430dc54ffb265cbe96605ef8909c9ba0065fa11bdbf170bfd88391cf98ba
 PATCH_SHA=33818f3f56b7dddc8c61d654af6567c9c5b9220ca75d6ac23a52611038257508
@@ -172,6 +193,11 @@ fi
 PRODUCT_ID=()
 APP_OPTIONS=()
 if [ $PC = 1 ]; then
+if [ -n "$STOCK" ]; then
+	step "checking installed Custom Edition 1.10 stock"
+	$PY scripts/accept-installed-stock.py --stage --game "$STOCK" --reference "$REFERENCE" --product-id-file "$PRODUCT_ID_FILE"
+	PRODUCT_ID=(--product-id "$PRODUCT_ID_FILE")
+else
 # 1.10 files assembled by an earlier build are reused; the update is needed only the first time
 ACCEPTED=$($PY -c "import json;print(json.load(open('config/profiles/custom-en-1.0.10.0621.json'))['accepted_sha256'])")
 ASSEMBLED=0
@@ -199,6 +225,17 @@ else
 fi
 $PY scripts/extract-reference-components.py
 
+PRODUCT_ID=()
+if [ -n "$KEY_FILE" ] || [ -t 0 ]; then
+	step "your product ID (Halo's installer step)"
+	if [ -n "$KEY_FILE" ]; then scripts/product-id.sh --installer "$INSTALLER" < "$KEY_FILE"
+	else scripts/product-id.sh --installer "$INSTALLER"; fi
+	PRODUCT_ID=(--product-id generated/product-id/product-id.txt)
+else
+	echo "warning: no product key given; Halo will stop with 'Your product key is invalid' until you add one" >&2
+fi
+fi
+
 runs() { { find generated/srw/custom-en-1.0.10.0621 -mindepth 1 -maxdepth 3 -type d -name 'run-*' -prune 2>/dev/null || true; } | sort; }
 RUNS_BEFORE=$(runs)                                   # this build's translation runs are the new ones
 WORK=$($PY scripts/builder/pc_cache.py lookup)
@@ -218,16 +255,6 @@ else
 	$PY scripts/va-model.py --work "$WORK" --llasm "$BUILD/llasm/llasm"
 	# Retain completed PC work even if a later Xbox update fails.
 	$PY scripts/builder/pc_cache.py record --work "$WORK"
-fi
-
-PRODUCT_ID=()
-if [ -n "$KEY_FILE" ] || [ -t 0 ]; then
-	step "your product ID (Halo's installer step)"
-	if [ -n "$KEY_FILE" ]; then scripts/product-id.sh --installer "$INSTALLER" < "$KEY_FILE"
-	else scripts/product-id.sh --installer "$INSTALLER"; fi
-	PRODUCT_ID=(--product-id generated/product-id/product-id.txt)
-else
-	echo "warning: no product key given; Halo will stop with 'Your product key is invalid' until you add one" >&2
 fi
 
 else
@@ -253,6 +280,16 @@ HALOPAD_XBOX=$XBOX_SETTING $PY scripts/build-ios-app.py "${TARGET[@]}" --work "$
 [ $XBOX = 0 ] || hdiutil detach "$ROOT/ref/xbox-build/vol" -quiet 2>/dev/null || true   # the engine's volume (after its release tag is read)
 APP=$(sed -n 's/^built //p' "$APP_LOG" | tail -n 1)
 [ -d "$APP" ] || { echo "app build failed" >&2; exit 5; }
+if [ -n "$STOCK" ]; then
+	step "bundling installed stock into the app"
+	$PY scripts/accept-installed-stock.py --bundle-app "$APP"
+	# Files added after build-ios-app's signature. Seal again so Devices re-signs a coherent app.
+	if command -v codesign >/dev/null; then
+		ENT="$(dirname "$APP")/entitlements.plist"
+		if [ -f "$ENT" ]; then codesign --force --sign - --entitlements "$ENT" --timestamp=none "$APP"
+		else codesign --force --sign - --timestamp=none "$APP"; fi
+	fi
+fi
 
 if [ $PC = 0 ]; then
 	step "packaging your Xbox-only app"

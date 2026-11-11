@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "game": "halopad",
+  "layout_policy": "pad-control-layout",
+  "layout_version": 1,
+  "note": "Halo Custom Edition and the Xbox edition share these touch targets. The shared layout policy does not own these action numbers.",
+  "slots": [
+    {"id": "move", "kind": "stick", "fallback_actions": [19, 21, 20, 22]},
+    {"id": "look", "kind": "stick", "look": true},
+    {"id": "fire", "ident": "fire", "caption": "FIRE", "action": 7, "look": true, "size": 2},
+    {"id": "action", "ident": "action", "caption": "USE", "action": 2, "look": false, "size": 1},
+    {"id": "switch", "ident": "switch", "caption": "SWAP", "action": 3, "look": false, "size": 1},
+    {"id": "zoom", "ident": "zoom", "caption": "ZOOM", "action": 11, "look": false, "size": 1},
+    {"id": "grenade", "ident": "grenade", "caption": "THROW", "action": 6, "look": true, "size": 1},
+    {"id": "melee", "ident": "melee", "caption": "MELEE", "action": 4, "look": false, "size": 1},
+    {"id": "reload", "ident": "reload", "caption": "RELOAD", "action": 13, "look": false, "size": 1},
+    {"id": "crouch", "ident": "crouch", "caption": "CROUCH", "action": 10, "look": false, "size": 1},
+    {"id": "jump", "ident": "jump", "caption": "JUMP", "action": 0, "look": false, "size": 1},
+    {"id": "flash", "ident": "flash", "caption": "LIGHT", "action": 5, "look": false, "size": 1},
+    {"id": "nade", "ident": "nadetype", "caption": "NADE", "action": 1, "look": false, "size": 1},
+    {"id": "scores", "ident": "scores", "caption": "", "action": 12, "look": false, "size": 0},
+    {"id": "pause", "ident": "menu", "caption": "", "action": -1, "look": false, "size": 0}
+  ]
+}

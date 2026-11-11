@@ -398,6 +398,11 @@ scripts/builder/build.sh /path/to/HaloCESetup.exe --xbox --mac --zip HaloPad.zip
 scripts/builder/build.sh /path/to/HaloCESetup.exe --xbox --ipa HaloPad.ipa
 ```
 
+An owned 1.10 install whose `haloce.exe` matches the locked profile can regenerate
+the current translation without the installer. The product ID already stored in
+that app is still required. See [docs/CE-UNSIGNED-BUILD.md](docs/CE-UNSIGNED-BUILD.md).
+Do not send the installer, product key, or game files to a build log or to CI.
+
 The builder downloads this release's recorded [OpenCE](https://github.com/OpenCommunityEdition/OpenCE)
 engine and the pinned ANGLE renderer from their own repositories and builds them; none of that code is
 part of HaloPad. For PC builds it downloads Bungie's free 1.10 update, checks the PC files by hash,

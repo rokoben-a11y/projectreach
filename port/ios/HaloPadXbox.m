@@ -216,6 +216,7 @@ static BOOL xbox_backup_saves(NSError **error)
 - (void)loadView
 {
 	UIView *root = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+	root.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 	root.backgroundColor = UIColor.blackColor;
 	game = xg_ios_make_view(root.bounds);
 	game.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -265,6 +266,10 @@ static BOOL xbox_backup_saves(NSError **error)
 - (void)viewDidLayoutSubviews
 {
 	[super viewDidLayoutSubviews];
+	if (self.view.window && !CGRectEqualToRect(self.view.frame, self.view.window.bounds))
+		self.view.frame = self.view.window.bounds;
+	CGFloat scale = self.traitCollection.displayScale;
+	if (scale > 0 && game.contentScaleFactor != scale) game.contentScaleFactor = scale;
 	xg_ios_view_resized();
 }
 

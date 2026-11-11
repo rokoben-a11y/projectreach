@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "pad-control-layout",
+  "version": 1,
+  "geometry_only": true,
+  "consumers": ["HaloPad"],
+  "future_consumers": ["KartPad"],
+  "excluded_consumers": ["Playport"],
+  "selection": {
+    "uses_device_model": false,
+    "large_min_safe_width": 700,
+    "large_min_safe_height": 500,
+    "rule": "large when the live safe rectangle is at least large_min_safe_width by large_min_safe_height points; otherwise compact. A regular by regular size class sets bottom_band and uses the lower keyboard inset instead of the raised one. Insets come from the window safe area."
+  },
+  "minimum_target_points": 44,
+  "slots": [
+    "move",
+    "look",
+    "fire",
+    "action",
+    "switch",
+    "zoom",
+    "grenade",
+    "melee",
+    "reload",
+    "crouch",
+    "jump",
+    "flash",
+    "nade",
+    "scores",
+    "pause"
+  ],
+  "size_classes": {
+    "compact": "Lower grip for a short or narrow safe rectangle, including the cover screen.",
+    "large": "Raised side grip when the safe rectangle is tablet-like and bottom_band is not set. Width of at least 1000 points also applies the existing wide scale.",
+    "bottom_band": "Regular horizontal and vertical size classes. The whole grip sits on the bottom of the safe rectangle, in the keyboard band, and stays off active fold and camera regions."
+  },
+  "saved_layout_keys": {
+    "version": 4,
+    "compact": "HaloPad.compact.v4",
+    "large": "HaloPad.large.v4",
+    "bottom": "HaloPad.bottom.v4",
+    "legacy_read": "HaloPad.phone.v3 or HaloPad.tablet.v3 is read only when the size class still matches that idiom. Writes and resets use v4."
+  }
+}

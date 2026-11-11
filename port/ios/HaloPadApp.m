@@ -2,7 +2,7 @@
  *
  * The core (halopad_core_run: Halo from its PE entry point) runs on its own thread. Windows
  * Halo creates appear in the app's view: the shell attaches each window's Metal layer
- * (halopad_host_attach_view), letterboxed. When Halo's first-run license check runs, the shell
+ * (halopad_host_attach_view) and scales it to the current view. When Halo's first-run license check runs, the shell
  * shows the game's own Eula.rtf with Accept and Decline and returns the player's choice
  * (halopad_host_license_prompt); nothing is chosen for the player. A hardware keyboard, touch
  * (as the left mouse button), an iPad pointer (buttons, hover, scrolling) and scene activation
@@ -18,12 +18,14 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdatomic.h>
+#include "../shared/hp_present.h"
 #include <sys/utsname.h>
 
 #include "../runtime/halopad_input.h"
 #import "HaloPadOverlay.h"
 #include "halopad_menu_touch.h"
 #include "../runtime/halopad_log.h"
+#import "../apple/halopad_host.h"
 #include <pthread.h>
 
 int halopad_core_run(void);
@@ -393,6 +395,16 @@ static NSString *documents_game_dir(void)
     return [docs.path stringByAppendingPathComponent:@"Halo Custom Edition"];
 }
 
+/* Optional offline stock tree packed beside data/modules. Absent is normal.
+   The signed inventory still decides acceptance. Paths and file bytes are not logged. */
+static NSString *bundled_game_dir(void)
+{
+    NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"bundled-game"];
+    BOOL directory = NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || !directory) return nil;
+    return path;
+}
+
 static NSDictionary *game_core_identity(void)
 {
     NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"data/core-identity.json"];
@@ -442,7 +454,7 @@ static void resolve_device_paths(void)
     UILabel *text = [UILabel new];
     text.numberOfLines = 0;
     text.font = [UIFont systemFontOfSize:17];
-    text.text = @"Prepare your own Halo Custom Edition 1.10 files on your Mac with HaloPad’s preparation tool, using this app build. Transfer the resulting .halopad.zip package to Files, then choose it below. HaloPad checks the complete package before installing it.\n\nA replacement keeps your previous game folder as a backup. The game and its product key are not included. Choose Folder imports only supported stock files. Other files stay in the source folder or retained backup.";
+    text.text = @"Prepare your own Halo Custom Edition 1.10 files on your Mac with HaloPad’s preparation tool, using this app build. Transfer the resulting .halopad.zip package to Files, then choose it below. HaloPad checks the complete package before installing it.\n\nA replacement keeps your previous game folder as a backup. The game and its product key are not included. Choose Folder imports only supported stock files. Other files stay in the source folder or retained backup.\n\nIf this copy of HaloPad already contains matching game files, they are used automatically.";
     self.status = [UILabel new];
     self.status.numberOfLines = 0;
     self.status.font = [UIFont systemFontOfSize:15];
@@ -504,17 +516,28 @@ static void resolve_device_paths(void)
     self.importButtons.alpha = .5;
     self.status.text = @"Verifying your installed game files…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *problem = game_dir_problem(documents_game_dir());
+        NSString *docs = documents_game_dir();
+        NSString *problem = game_dir_problem(docs);
+        NSString *root = problem ? nil : docs;
+        NSString *bundled = bundled_game_dir();
+        BOOL bundledMismatch = NO;
+        if (!root && bundled) {
+            if (game_dir_problem(bundled)) bundledMismatch = YES;
+            else root = bundled;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.status.text = problem ?: @"Game data verified. Starting…";
-            if (problem) {
+            if (root) {
+                self.status.text = @"Game data verified. Starting…";
+                if (bundled && [root isEqualToString:bundled])
+                    fprintf(stderr, "HALOPAD APP: using bundled game data\n");
+                /* Keep the success latch until dismissal: no second core on repeated taps. */
+                setenv("HALOPAD_GAME_ROOT", root.UTF8String, 1);
+                if (self.ready) self.ready();
+            } else {
+                self.status.text = bundledMismatch ? [problem stringByAppendingString:@"\n\nBundled game data in this app does not match this build."] : problem;
                 self.importing = NO;
                 self.importButtons.userInteractionEnabled = YES;
                 self.importButtons.alpha = 1;
-            } else {
-                /* Keep the success latch until dismissal: no second core on repeated taps. */
-                setenv("HALOPAD_GAME_ROOT", documents_game_dir().UTF8String, 1);
-                if (self.ready) self.ready();
             }
         });
     });
@@ -1143,7 +1166,8 @@ static void touch_selftest(void)
 @implementation HPGameViewController
 - (void)loadView
 {
-    UIView *v = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    UIView *v = [[UIView alloc] initWithFrame:CGRectZero];
+    v.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     v.backgroundColor = UIColor.blackColor;
     v.multipleTouchEnabled = NO;
     [v addGestureRecognizer:[[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(hover:)]];
@@ -1265,9 +1289,29 @@ static void touch_selftest(void)
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    for (CALayer *l in game_view.layer.sublayers) l.frame = game_view.bounds;
+    /* Follow the window the system actually gave this scene, including a fold or resize. */
+    if (self.view.window && !CGRectEqualToRect(self.view.frame, self.view.window.bounds))
+        self.view.frame = self.view.window.bounds;
+    CGFloat scale = self.traitCollection.displayScale;
+    if (scale > 0 && game_view.contentScaleFactor != scale) game_view.contentScaleFactor = scale;
+    for (CALayer *l in game_view.layer.sublayers) {
+        l.frame = game_view.bounds;
+        if (scale > 0) l.contentsScale = scale;
+    }
+    /* The scene's points and this view's display scale. Layout runs again on a fold. */
+    halopad_host_set_screen_size(self.view.window.windowScene.coordinateSpace.bounds, scale);
     [self applyDisplay];
     [self.view bringSubviewToFront:overlay];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
+{
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        (void)size;
+        (void)context;
+        [self.view setNeedsLayout];
+        [self.view layoutIfNeeded];
+    }];
 }
 /* ---- the overlay's requests ---- */
 - (void)applyDisplay
@@ -1303,7 +1347,7 @@ static void touch_selftest(void)
     NSString *build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"?";
     NSMutableArray *pads = [NSMutableArray array];
     for (GCController *c in GCController.controllers) [pads addObject:c.vendorName ?: @"controller"];
-    CGSize screen = UIScreen.mainScreen.bounds.size;
+    CGSize screen = self.view.window.windowScene.coordinateSpace.bounds.size;
     return [NSString stringWithFormat:@"HaloPad %@ (build %@)\nDevice: %s, %@ %@, %.0fx%.0f points\nHalo map: %@\n"
             "Frames presented: %d\nControllers: %@\nTouch controls: %@; display %@",
             ver, build, u.machine, UIDevice.currentDevice.systemName, UIDevice.currentDevice.systemVersion,
@@ -1437,9 +1481,12 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     halopad_host_window_size(input_window, &w, &h);
     CGRect b = game_view.frame;
     if (b.size.width <= 0 || b.size.height <= 0) return NO;
-    double sx = b.size.width / w, sy = b.size.height / h;
-    if (b.size.height < self.view.bounds.size.height - 1 || HPSettings.shared.aspect != HPAspectFill) sx = sy = fmin(sx, sy);
-    double ox = b.origin.x + (b.size.width - w * sx) / 2, oy = b.origin.y + (b.size.height - h * sy) / 2;
+    int fit = b.size.height < self.view.bounds.size.height - 1 || HPSettings.shared.aspect != HPAspectFill;
+    double cx, cy, cw, ch;
+    hp_present_frame(b.size.width, b.size.height, w, h, fit, &cx, &cy, &cw, &ch);
+    if (!(cw > 0 && ch > 0)) return NO;
+    double sx = cw / w, sy = ch / h;
+    double ox = b.origin.x + cx, oy = b.origin.y + cy;
     *x = (int32_t)floor((p.x - ox) / sx);
     *y = (int32_t)floor((p.y - oy) / sy);
     *scale = 1 / fmin(sx, sy);
@@ -1774,7 +1821,9 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     if (![audio setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:AVAudioSessionCategoryOptionMixWithOthers error:&err] ||
         ![audio setActive:YES error:&err])
         fprintf(stderr, "HALOPAD APP: audio session: %s\n", err.localizedDescription.UTF8String);
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    self.window = [[UIWindow alloc] initWithWindowScene:windowScene];
+    self.window.frame = windowScene.coordinateSpace.bounds;
     if (HPEngineChooserMake)
         self.window.rootViewController = HPEngineChooserMake(^UIViewController *{ return game_vc = [HPGameViewController new]; });
     else
@@ -1784,13 +1833,14 @@ extern UIViewController *HPEngineChooserMake(UIViewController *(^makePC)(void)) 
     UIWindowSceneGeometryPreferencesIOS *land = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape];
     [(UIWindowScene *)scene requestGeometryUpdateWithPreferences:land errorHandler:^(NSError *e) { fprintf(stderr, "HALOPAD APP: landscape request: %s\n", e.localizedDescription.UTF8String); }];
 }
-/* iPadOS 26 opens apps in resizable windows when the iPad uses Windowed Apps
-   (Settings → Multitasking & Gestures); only the player can choose Full Screen
-   Apps. Keep the window controls minimal so they stay out of Halo's picture,
-   which letterboxes to any window size. */
+/* Keep the window controls minimal. The picture uses whatever bounds this scene has. */
 - (UISceneWindowingControlStyle *)preferredWindowingControlStyleForScene:(UIWindowScene *)windowScene API_AVAILABLE(ios(26.0))
 {
     return UISceneWindowingControlStyle.minimalStyle;
+}
+- (void)windowScene:(UIWindowScene *)windowScene didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation traitCollection:(UITraitCollection *)previousTraitCollection
+{
+    self.window.frame = windowScene.coordinateSpace.bounds;
 }
 - (void)sceneDidBecomeActive:(UIScene *)scene
 {

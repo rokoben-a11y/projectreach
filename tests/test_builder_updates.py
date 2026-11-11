@@ -344,6 +344,38 @@ print('built', p)
         self.assertTrue((self.root / fresh / '.builder').exists())
         self.assertTrue((self.root / fresh / 'app/HaloPad.app').is_dir())
 
+    def test_installed_stock_does_not_call_the_installer_or_reuse_modules(self):
+        self.write('scripts/accept-installed-stock.py', '''import sys
+open("stock-calls", "a").write(" ".join(sys.argv) + "\\n")
+''')
+        self.write('scripts/build-ios-app.py', '''import pathlib, sys
+assert "--product-id" in sys.argv
+assert "--xbox-only" not in sys.argv
+p = pathlib.Path("generated/srw/custom-en-1.0.10.0621/run-cached/app/HaloPad.app")
+p.mkdir(parents=True)
+print("built", p)
+''')
+        for tool in ('7zz', 'wine', 'winetricks'):
+            (self.root / 'bin' / tool).unlink()
+        (self.root / 'input/HaloCESetup.exe').unlink()
+        stock = self.root / 'bundled-game'
+        reference = self.root / 'reference'
+        stock.mkdir()
+        reference.mkdir()
+        product = self.root / 'product-id.txt'
+        product.write_text('private-product-id-not-a-key\n')
+        result = self.run_builder(selected=stock, extra=(
+            '--installed-stock', str(stock), '--reference-root', str(reference),
+            '--product-id-file', str(product), '--app-version', '0.3.15', '--app-build', '1'))
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        calls = (self.root / 'stock-calls').read_text()
+        self.assertIn('--stage', calls)
+        self.assertIn('--bundle-app', calls)
+        self.assertNotIn('private-product-id-not-a-key', output)
+        self.assertIn('--product-id', calls)
+        self.assertFalse((self.root / 'ref/HaloCESetup.exe').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
