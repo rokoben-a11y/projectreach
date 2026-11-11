@@ -141,6 +141,18 @@ class ControlLayoutPolicyTests(unittest.TestCase):
         self.assertIn('reservedRegionsOfKind:', text)
         self.assertIn('.bottom_band = [self innerBottomBand]', text)
 
+    def test_reserved_regions_pass_a_kind_object(self):
+        """UIKit 27.1: -reservedRegionsOfKind:(UIViewReservedRegionKind *)kind options:. An integer kind crashed the CE screen."""
+        text = OVERLAY.read_text()
+        method = text.split('- (int)copyReservedRegions:', 1)[1].split('\n}\n', 1)[0]
+        self.assertIn('@available(iOS 27.1, *)', method)
+        self.assertIn('[UIViewReservedRegionKind divisionRegionKind]', method)
+        self.assertIn('[UIViewReservedRegionKind occlusionRegionKind]', method)
+        self.assertIn('reservedRegionsOfKind:kind options:UIViewReservedRegionQueryOptionsNone', method)
+        self.assertNotIn('NSInvocation', text)
+        self.assertNotIn('NSSelectorFromString(@"reservedRegions', text)
+        self.assertNotRegex(text, r'setArgument:&kind')
+
     def _bottom_gap(self, vector):
         _, sy, _, sh = vector['safe']
         move = vector['frames'][0]

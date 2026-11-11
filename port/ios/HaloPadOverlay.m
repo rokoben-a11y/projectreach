@@ -878,68 +878,39 @@ _Static_assert(NCONTROLS == HP_LAYOUT_SLOT_COUNT - 2, "Halo controls must stay i
 }
 - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
 
-/* Active fold and camera regions, if this SDK has them (iOS 27.1). Both kinds are
-   queried; shape tells a vertical fold from a horizontal one and from a camera. */
-static NSArray *HPActiveRegions(UIView *view, NSInteger kind)
-{
-    SEL sel = NSSelectorFromString(@"reservedRegionsOfKind:options:");
-    NSMethodSignature *sig;
-    NSInvocation *inv;
-    NSUInteger options = 0;
-    __unsafe_unretained id result = nil;
-    if (![view respondsToSelector:sel]) {
-        sel = NSSelectorFromString(@"reservedRegionsWithKind:options:");
-        if (![view respondsToSelector:sel]) return nil;
-    }
-    sig = [view methodSignatureForSelector:sel];
-    if (!sig || strcmp(sig.methodReturnType, @encode(id)) != 0) return nil;
-    inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = view;
-    inv.selector = sel;
-    [inv setArgument:&kind atIndex:2];
-    [inv setArgument:&options atIndex:3];
-    [inv invoke];
-    [inv getReturnValue:&result];
-    return [result isKindOfClass:NSArray.class] ? result : nil;
-}
-static CGRect HPRegionFrame(id region)
-{
-    SEL frameSel = @selector(frame);
-    if ([region respondsToSelector:frameSel]) {
-        NSMethodSignature *sig = [region methodSignatureForSelector:frameSel];
-        if (sig && sig.methodReturnLength == sizeof(CGRect)) {
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            CGRect frame = CGRectZero;
-            inv.target = region;
-            inv.selector = frameSel;
-            [inv invoke];
-            [inv getReturnValue:&frame];
-            if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame)) return frame;
-        }
-    }
-    if ([region respondsToSelector:@selector(valueForKey:)]) {
-        id value = [region valueForKey:@"frame"];
-        if ([value isKindOfClass:NSValue.class]) return [value CGRectValue];
-    }
-    return CGRectNull;
-}
+/* Active fold (division) and camera (occlusion) regions on iOS 27.1 and later.
+   UIKit's API is -reservedRegionsOfKind:(UIViewReservedRegionKind *)kind options:(UIViewReservedRegionQueryOptions),
+   and the kind is an object (+divisionRegionKind / +occlusionRegionKind), never an integer.
+   Passing an integer there sends a message to a bogus pointer and crashes the first layout
+   of this overlay (the CE and Xbox game screens). Default options return active regions only.
+   Older SDKs or OS versions report none, which keeps the plain bottom band. */
+#if __has_include(<UIKit/UIViewReservedRegion.h>)
+#define HP_HAS_RESERVED_REGIONS 1
+#endif
 - (int)copyReservedRegions:(hp_layout_region *)out limit:(int)limit
 {
     int n = 0;
-    NSInteger kind;
-    for (kind = 0; kind <= 1 && n < limit; kind++) {
-        for (id region in HPActiveRegions(self, kind)) {
-            CGRect frame;
-            if (n >= limit) break;
-            frame = HPRegionFrame(region);
-            if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) continue;
-            out[n].x = frame.origin.x;
-            out[n].y = frame.origin.y;
-            out[n].w = frame.size.width;
-            out[n].h = frame.size.height;
-            n++;
+#if HP_HAS_RESERVED_REGIONS
+    if (@available(iOS 27.1, *)) {
+        NSArray<UIViewReservedRegionKind *> *kinds = @[[UIViewReservedRegionKind divisionRegionKind],
+                                                        [UIViewReservedRegionKind occlusionRegionKind]];
+        for (UIViewReservedRegionKind *kind in kinds) {
+            for (UIViewReservedRegion *region in [self reservedRegionsOfKind:kind options:UIViewReservedRegionQueryOptionsNone]) {
+                CGRect frame = region.frame;
+                if (n >= limit) return n;
+                if (!region.active || CGRectIsNull(frame) || CGRectIsEmpty(frame)) continue;
+                out[n].x = frame.origin.x;
+                out[n].y = frame.origin.y;
+                out[n].w = frame.size.width;
+                out[n].h = frame.size.height;
+                n++;
+            }
         }
     }
+#else
+    (void)out;
+    (void)limit;
+#endif
     return n;
 }
 - (void)clearViews:(NSArray<UIView *> *)views regions:(const hp_layout_region *)regions count:(int)count request:(const hp_layout_request *)request
